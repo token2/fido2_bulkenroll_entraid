@@ -10,7 +10,7 @@ This tool streamlines the process of registering FIDO2 security keys in **Micros
 - **Forced PIN Change**: Option to enforce PIN change after provisioning.
 - **Clipboard Integration**: Automatically copies generated PINs to the clipboard for quick use.
 - **Error Handling**: Provides clear prompts for errors and guides the user to resolve them.
-- **Detailed Logging**: Logs all operations in a `.log` file for easy reference.
+- **Detailed Logging**: Logs all operations in a `.log` file for easy reference. 
 
 ## Prerequisites
 
@@ -97,7 +97,7 @@ Handle this log file carefully, as it contains sensitive information such as PIN
 
 ## Contact
 
-For support, please [contact us](https://www.token2.swiss/contact) with:
+For support, please [contact us](https://www.token2.swiss/contact) with: 
 - Error messages encountered during operation.
 - A copy of the log file (if applicable) for analysis.
 
