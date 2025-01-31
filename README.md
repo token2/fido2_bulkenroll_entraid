@@ -27,7 +27,7 @@ This tool streamlines the process of registering FIDO2 security keys in **Micros
 
 ### Required Files
 Ensure the following files are included in the archive:
-- `read_serial_t2.exe`: Utility to read the serial number of FIDO keys.
+- `read_serial_t2.exe`: Utility to read the serial number of FIDO keys. 
 - `fido2-manage.exe`: Tool to manage FIDO2 keys.
 
 ### Input File
@@ -43,6 +43,7 @@ If your Entra account is FIDO2/Passkey-protected, follow these steps:
 1. Log in to an application like Microsoft Teams (even if unlicensed).
 2. Choose the option **"Sign in to all your apps"**.
 3. This will add your credentials to the session, allowing you to select the logged-in account when running the script.
+4. The latest update of `read_serial_t2.exe` also allows you to disable or enable the HID functionality of the key using the `-hid 0` or `-hid 1` option. Please note that HID is used for TOTP functionality with companion apps over USB, so only disable it (`-hid 0`) if you do not intend to use the TOTP feature of the key.. 
 
 ## Using the Tool
 
