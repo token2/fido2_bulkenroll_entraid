@@ -1,4 +1,4 @@
-$samplepin = '123457'
+$samplepin = '1234587'
 
 
 ###region utility functions
@@ -192,7 +192,7 @@ function Generate-RandomPin {
         # Generate a random 8-digit PIN
         $pin = -join ((48..57) | Get-Random -Count 8 | ForEach-Object { [char]$_ })
         
-        # Check for sequential numbers in ascending or descending order (6 or more in a row)
+        # Check for sequential numbers (ascending or descending) of 6 digits
         $isSequential = $false
         for ($i = 0; $i -le ($pin.Length - 6); $i++) {
             $slice = $pin.Substring($i, 6)
@@ -205,13 +205,17 @@ function Generate-RandomPin {
         # Check for repeated digits (4 or more in a row)
         $hasRepeatedDigits = $pin -match '(\d)\1{3,}'
 
-        # Check for palindromes (entire 8-digit pin is the same forwards and backwards)
-        $isPalindrome = ($pin -eq -join ($pin.ToCharArray() | [Array]::Reverse($_); $_))
+        # Check for palindrome
+        $charArray = $pin.ToCharArray()
+        [Array]::Reverse($charArray)
+        $reversedPin = -join $charArray
+        $isPalindrome = ($pin -eq $reversedPin)
 
     } while ($isSequential -or $hasRepeatedDigits -or $isPalindrome)
 
     return $pin
 }
+
 
 # taken from Register-Passkey https://github.com/MichaelGrafnetter/webauthn-interop
 # (DSInternals.Passkeys v1.0.3, MIT)
