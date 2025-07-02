@@ -94,7 +94,33 @@ jane.smith@domain.com, 0987654321, 456789, No
 ------------------------------------------------------------
 ```
 
-Handle this log file carefully, as it contains sensitive information such as PINs.
+Handle this log file carefully, as it contains sensitive information such as PINs. Please note that this will contain only successfully provisioned account information, not errors or failures. 
+
+## Difference Between `EnrollFIDO2.ps1` and `EnrollFIDO2_fido2-cred.ps1`
+
+Both scripts are used to provision FIDO2 credentials on security keys, but they differ in their approach and user interaction requirements.
+
+### ✅ `EnrollFIDO2.ps1`
+- **Uses** the native Windows WebAuthn API (`webauthn.dll`)
+- **Prompts** the standard Windows security dialog for each credential
+- **Requires**:
+  - Waiting for the Windows dialog to appear
+  - **Manually entering the PIN**
+  - **Touching/tapping** the key to confirm
+- Fully integrated with Windows, but **slower and more repetitive** for bulk provisioning
+
+### ⚡ `EnrollFIDO2_fido2-cred.ps1`
+- **Uses** the external `fido2-cred` tool instead of the Windows API
+- **Writes credentials directly** to the key via command-line
+- **Requires only a touch or NFC tap** on the key—**no PIN dialog**
+- Much **faster and more efficient** for mass provisioning scenarios
+
+---
+
+### Summary
+
+- Use **`EnrollFIDO2.ps1`** if you need native Windows WebAuthn integration  
+- Use **`EnrollFIDO2_fido2-cred.ps1`** if you want a faster, PIN-less flow with minimal interaction
 
 ## Troubleshooting
 
