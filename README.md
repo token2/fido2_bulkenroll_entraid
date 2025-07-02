@@ -121,6 +121,9 @@ Both scripts are used to provision FIDO2 credentials on security keys, but they 
 
 - Use **`EnrollFIDO2.ps1`** if you need native Windows WebAuthn integration  
 - Use **`EnrollFIDO2_fido2-cred.ps1`** if you want a faster, PIN-less flow with minimal interaction
+ 
+
+
 
 ## Troubleshooting
 
