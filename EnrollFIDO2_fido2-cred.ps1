@@ -1,7 +1,45 @@
-$samplepin = '1234587'
+#Use -Verbose to specify a loglevel, -1 for no custom messages, 0 is default, 1 means slightly more info at significant steps, 2 is super detailed.
+param([Int]$verbose=0)
+
+function Write-Log ($var,$level=0) {
+	#Write-Host ("Entering Log Writer")
+	#Write-Host $verbose
+	#Write-Host $level
+	if($level -le $verbose) {
+		Write-Host($var)
+	}
+}
+
+if($verbose -gt 0) {
+	Write-Log "running at log level $verbose" $verbose
+}
+elseif($verbose -eq -1) {
+	Write-Log "Suppressing most logs" -1
+}
+
+$samplepin = '12345679'
 
 
 ###region utility functions
+
+#Windows doesnt apparently always bring a modern Powershell (even 24H2 comes with PS5.1)
+function Test-IsValidJson {
+    param (
+        [string]$JsonString
+    )
+
+    # Quick pre-check to rule out empty strings or basic text
+    if ([string]::IsNullOrWhiteSpace($JsonString)) { return $false }
+	#$JsonString | Out-Host
+    try {
+        # -ErrorAction Stop forces PowerShell to jump to the catch block on failure
+        $null = ConvertFrom-Json -InputObject $JsonString -ErrorAction Stop
+		return $true
+    }
+    catch {
+        return $false
+    }
+}
 
 ###taken from https://github.com/rmbolger/Posh-ACME/blob/main/Posh-ACME/Private/ConvertTo-Base64Url.ps1 (MIT, Commit 13367d2)
 function ConvertTo-Base64Url {
@@ -38,6 +76,45 @@ function ConvertTo-Base64Url {
     }
 }
 
+### https://github.com/rmbolger/Posh-ACME/blob/main/Posh-ACME/Private/ConvertFrom-Base64Url.ps1 and cut down
+function ConvertB64From-Base64Url {
+    [CmdletBinding()]
+    [OutputType('System.String', ParameterSetName='String')]
+    [OutputType('System.Byte[]', ParameterSetName='Bytes')]
+	[OutputType('System.String', ParameterSetName='base64')]
+    param(
+        [Parameter(ParameterSetName='Bytes',Mandatory,Position=0,ValueFromPipeline)]
+        [Parameter(ParameterSetName='String',Mandatory,Position=0,ValueFromPipeline)]
+        [AllowEmptyString()]
+        [string]$Base64Url,
+        [Parameter(ParameterSetName='Bytes',Mandatory)]
+        [switch]$AsByteArray
+    )
+
+    Process {
+
+        # short circuit on empty strings
+        if ($Base64Url -eq [string]::Empty) {
+            return [string]::Empty
+        }
+
+        # put the standard unsafe characters back
+        $s = $Base64Url.Replace('-', '+').Replace('_', '/')
+
+        # put the padding back
+        switch ($s.Length % 4) {
+            0 { break; }             # no padding needed
+            2 { $s += '=='; break; } # two pad chars
+            3 { $s += '='; break; }  # one pad char
+            default { throw "Invalid Base64Url string" }
+        }
+
+        return $s
+
+    }
+
+}
+
 #https://stackoverflow.com/a/10939609 (changed to only allow integers
 function Is-Numeric ($Value) {
     return $Value -match "^[\d]+$"
@@ -65,6 +142,7 @@ function Get-MgGraphEndpoint {
 
 ###region CBOR handling
 
+#type+length info
 function cbor-build-len($type, $len){
 	if($len -lt 24) { # less than 24 -> into the type byte itself
 		return (@($type+$len))
@@ -115,6 +193,8 @@ function cbor-build-bytes($b64) { #bytes from base64
 }
 
 function build-att-object($sig, $authdata, $x5c, $alg="es256") {
+	
+	
 	#cbor base types
 	$map=160
 	$array=128
@@ -125,8 +205,13 @@ function build-att-object($sig, $authdata, $x5c, $alg="es256") {
 		Exit # Let's not deal with this for now
 	}
 	
+	Write-Log "Signature: $sig" 2
+	Write-Log "Authenticator Data: $authdata" 2
+	Write-Log "Attestation Cert: $x5c" 2
+	Write-Log "Algorithm: $alg" 2
+	
 	$cbor= @() #empty array
-	Write-Host "preparing CBOR..."
+	Write-Log "preparing CBOR..."
 	#map of 3 (format, statement, authdata)
 	$cbor += cbor-build-len $map 3
 	#fmt:packed
@@ -157,7 +242,19 @@ function build-att-object($sig, $authdata, $x5c, $alg="es256") {
 
 ###endregion
 
-
+function Get-FidoDevice {
+	#get eligible FIDO Devices, please only have one FIDO Device connected at a time
+	$devicelist = (& "$PSScriptRoot\libfido2-ui.exe" -L).Split([Environment]::NewLine)
+	
+	foreach ($fidodevice in $devicelist) {
+		$devicepath=($fidodevice -Split ": ")[0]
+		#take first device that is not windows hello.
+		if($devicepath -ne "windows://hello") {
+			return $devicepath
+		}
+	}
+	return ""
+}
 
 # Function to check and install a module if not present
 function Ensure-Module {
@@ -167,24 +264,24 @@ function Ensure-Module {
     )
     # Check if the module is installed
     if (-not (Get-Module -ListAvailable -Name $ModuleName)) {
-        Write-Output "Module '$ModuleName' is not installed. Installing..."
+        Write-Log "Module '$ModuleName' is not installed. Installing..."
         try {
             Install-Module -Name $InstallCommand -Scope CurrentUser -Force -AllowClobber
-            Write-Output "Module '$ModuleName' installed successfully."
+            Write-Log "Module '$ModuleName' installed successfully."
         } catch {
-            Write-Error "Failed to install module '$ModuleName': $_"
+            Write-Log "Failed to install module '$ModuleName': $_"
         }
     } else {
-        Write-Output "Module '$ModuleName' is already installed."
+        Write-Log "Module '$ModuleName' is already installed."
     }
 }
 
 # Ensure Connect-MgGraph is installed
-Ensure-Module -ModuleName "Microsoft.Graph" -InstallCommand "Microsoft.Graph"
+Ensure-Module -ModuleName "Microsoft.Graph.Identity.SignIns"
 
 # Ensure dsinternals.passkeys is installed
-Ensure-Module -ModuleName "DSInternals.PassKeys"
-
+#Ensure-Module -ModuleName "DSInternals.PassKeys"
+#Import-Module -Name "DSInternals.PassKeys"
 
 # Function to generate a random PIN (8 digits, PIN+ complexity)
 function Generate-RandomPin {
@@ -223,7 +320,7 @@ function Generate-RandomPin {
 function Graph-Register-Custom-Passkey
 {
     [CmdletBinding()]
-    [OutputType([Microsoft.Graph.PowerShell.Models.MicrosoftGraphFido2AuthenticationMethod])]
+    [OutputType([Boolean])]
     param(
         [Parameter(Mandatory = $true)]
         [Alias('User')]
@@ -234,20 +331,33 @@ function Graph-Register-Custom-Passkey
     )
     process
     {
+		#cheap check if we even have a valid json, so MS isnt fed too many 400s
+		if( (Test-IsValidJson -JsonString $Passkey) -eq $false) {
+		Write-Log "Send Passkey ${UserId}: Invalid JSON, will not send to API"
+			Return $false
+		}
+		$respstatus=0
 		## send finished passkey to API
 		[string] $endpoint = Get-MgGraphEndpoint
 		# Generate the user-specific URL, e.g., https://graph.microsoft.com/beta/users/af4cf208-16e0-429d-b574-2a09c5f30dea/authentication/fido2Methods
 		[string] $registrationUrl = '{0}/beta/users/{1}/authentication/fido2Methods' -f $endpoint, [uri]::EscapeDataString($UserId)
 		
 		[string] $response = Invoke-MgGraphRequest `
+								-StatusCodeVariable respstatus `
 								-Method POST `
 								-Uri $registrationUrl `
 								-OutputType Json `
 								-ContentType 'application/json' `
 								-Body $Passkey
 								#-Body $Passkey.ToString()
-
-		return [Microsoft.Graph.PowerShell.Models.MicrosoftGraphFido2AuthenticationMethod]::FromJsonString($response)
+		if( $respstatus -eq 201 ) {
+			return $true
+		}
+		else {
+			return $false
+		}
+		# not actually used, evaluating status code is easier
+		#return [Microsoft.Graph.PowerShell.Models.MicrosoftGraphFido2AuthenticationMethod]::FromJsonString($response)
     }
 }
 
@@ -256,29 +366,42 @@ function Graph-Register-Custom-Passkey
 function CTAP-Create-Custom-Passkey
 {
     [CmdletBinding()]
-    [OutputType([DSInternals.Win32.WebAuthn.MicrosoftGraphWebauthnAttestationResponse])]
+    [OutputType([String])] #JSON of API body
     param(
         [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
-        [DSInternals.Win32.WebAuthn.MicrosoftGraphWebauthnCredentialCreationOptions]
-        $Options,
+        [Microsoft.Graph.PowerShell.Models.IMicrosoftGraphWebauthnCredentialCreationOptions]
+        $GraphOptions,
 
         [Parameter(Mandatory = $true)]
         [string] $DisplayName,
 		
 		[Parameter(Mandatory = $true)]
-        [string] $pin
+        [string] $pin,
+		
+		[Parameter(Mandatory = $true)]
+        [string] $devicepath
     )
 
     process
     {
+		Write-Log "CTAP Building: Init" 2
         try {
+			$Options = $GraphOptions.PublicKey
+			
+			#extract options
+			
+			Write-Log "CTAP Building: Extract Options" 2
+			#Return
+			Write-Log $Options 2
 			
 			#get Relying Party ID, user name/ID 
-			$rpid = $Options.PublicKeyOptions.RelyingParty.id
-			
-			$uid = [Convert]::ToBase64String($Options.PublicKeyOptions.User.Id)
-			$uname = $Options.PublicKeyOptions.User.Name
-			
+			$rpid = $Options.rp.id
+			Write-Log "CTAP Building: rpid: $rpid" 2
+			Write-Log $Options.User.Id
+			#$uid = [Convert]::ToBase64String($Options.User.Id)
+			$uid = ConvertB64From-Base64Url($Options.user.id)
+			$uname = $Options.user.name
+			Write-Log "Options Collected" 2
 			
 			###region ClientDataJSON/Hash
 			
@@ -295,83 +418,93 @@ function CTAP-Create-Custom-Passkey
 			
 			
 			#challenge as Base64url, https://www.w3.org/TR/webauthn-2/#dictionary-client-data
-			$chlb64url= ConvertTo-Base64Url $Options.PublicKeyOptions.challenge
+			$chlb64url= ConvertB64From-Base64Url $Options.challenge
 			
 			
 			$clientdata.challenge = $chlb64url
 			$clientDataJSON = ConvertTo-Json -InputObject $clientdata -Compress
-			
+			Write-Log "ClientDataJson Collected" 1
+			Write-Log $clientDataJSON 2
 			
 			#Create clientDataHash, in Base64, https://developers.yubico.com/libfido2/Manuals/fido2-cred.html
 			$hasher = [System.Security.Cryptography.HashAlgorithm]::Create('sha256')
 			$clientdatahashraw = $hasher.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($clientDataJSON))
 			$clientdatahash = [Convert]::ToBase64String($clientdatahashraw)
-			
+			Write-Log "ClientDataJson hashed" 2
 			###endregion
 			
 			
-			
+			Write-Log "Creating CLI args" 1
 			#initialize with base flags (PIN and create, rest if needed)
             $cli="-w $pin -M"
-
+			Write-Log "Added PIN" 2
 			#create with user Verification (UV)
-			$uv = $Options.PublicKeyOptions.AuthenticatorSelection.UserVerificationRequirement
-			if( $uv ) {
+			$uv = $Options.authenticatorSelection.userVerification
+			if( $uv -eq "required" ) {
 				$cli = $cli + " -v"
 			}
+			Write-Log "added UV requirement" 2
 			#create as resident/discoverable credential
-			$rk = $Options.PublicKeyOptions.AuthenticatorSelection.RequireResidentKey
+			$rk = $Options.authenticatorSelection.requireResidentKey
 			if( $rk ) {
 				$cli = $cli + " -r"
 			}
 			#create with hmac-secret
-			$hmac = $Options.PublicKeyOptions.Extensions.HmacCreateSecret
+			$hmac = $Options.extensions.hmacCreateSecret
 			if( $hmac ) {
 				$cli = $cli + " -h"
 			}
+			Write-Log "Added hmac-secret and RK requirement" 2
 			#credProtect
-			$cp = $Options.PublicKeyOptions.Extensions.CredProtect.value__
+			$cp = $Options.extensions.credProtect
+			switch($cp) {
+				"userVerificationOptional" {$cp=1}
+				"userVerificationOptionalWithCredentialIDList" {$cp=2}
+				"userVerificationRequired" {$cp=3}
+				default {$cp = $false }
+			}
+			
 			if( Is-Numeric($cp) ) {
 				$cli = $cli + " -c " + $cp
 			}
+			Write-Log "Added credProtect" 2
 			
-			#get eligible FIDO Devices, please only have one FIDO Device connected at a time
-			$devicelist = (& "$PSScriptRoot\libfido2-ui.exe" -L).Split([Environment]::NewLine)
-			
-			foreach ($fidodevice in $devicelist) {
-				$devicepath=($fidodevice -Split ": ")[0]
-				#take first device that is not windows hello.
-				if($devicepath -ne "windows://hello") {
-					Break
-				}
-			}
 			#add chosen device as final argument
 			$cli = $cli + " $devicepath" 
-			
+			Write-Log "Using Device path $devicepath" 2
 			
 			#prepare clientDataHash(base64), RPID, Username and user ID(base64) as Inputs for fido2-cred
-			$input= $clientdatahash + "`n" + $rpid + "`n" + $uname + "`n" + $uid + "`n"
+			$input = $clientdatahash + "`n" + $rpid + "`n" + $uname + "`n" + $uid + "`n"
+			Write-Log $input 1
 			
+			Write-Log $cli 1
             # Keep the current output encoding in a variable
             $oldEncoding = [console]::OutputEncoding
             # Set the output encoding to use UTF8 without BOM
             [console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 
             #modded for nfc and pin, pipe in inputs as UTF-8 to avoid writing unneeded files
-            $cred = $input | & ".\fido2-cred2.exe" $cli.split()
+            $cred = $input | & "$PSScriptRoot\fido2-cred2.exe" $cli.split()
 
             [console]::OutputEncoding = $oldEncoding
+			
+			if([string]::IsNullOrWhiteSpace($cred)) { #check for fail, exit early
+				Return $false
+			}
+			Write-Log "Credential creation on FIDO-Device successful"
 			#create array from the outputs and extract authenticator data, signature and attestation certificate (x5c) to manually build attestation object
 			$credarray=$cred -Split "`n"
 			
 			$authdata=$credarray[3]
 			$sig=$credarray[5]
 			$x5c=$credarray[6]
+			
+			Write-Log "Building Attestation object..." 1
 			$attobj = build-att-object $sig $authdata $x5c "es256"
 			
 			#pull credential ID as Base64URL to send to Microsoft
 			$credid=ConvertTo-Base64Url -FromBase64 $credarray[4]
-			
+			Write-Log "Collected data from attested credential"
 			#Exit
 			
 			## credential format, sampled from Microsoft Documentation
@@ -393,11 +526,13 @@ function CTAP-Create-Custom-Passkey
 			$send.publicKeyCredential.response.clientDataJSON=[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($clientDataJSON))
 			$send.publicKeyCredential.response.attestationObject=$attobj
 			$send.publicKeyCredential.id=$credid
-			$sendjson=ConvertTo-Json -InputObject $send
+			$sendjson=ConvertTo-Json -InputObject $send -compress
+			
+			Write-Log "Object to send to MS: $sendjson" 2
 			return $sendjson
         }
         catch {
-            throw
+            Return $false
         }
     }
 }
@@ -436,6 +571,12 @@ function Bring-MainWindowToForeground {
     [User32]::SetForegroundWindow([System.Diagnostics.Process]::GetCurrentProcess().MainWindowHandle)
 }
 
+###### MAIN START
+
+#Write-Log "test" 0
+#Exit
+
+
 # Import required modules
 Add-Type -AssemblyName System.Windows.Forms
 
@@ -462,7 +603,7 @@ try {
 } catch {
     # Property does not exist; create it
     New-ItemProperty -Path $regPath -Name $propertyName -Value $defaultValue -PropertyType String -Force | Out-Null
-    Write-Output "Property '$propertyName' created with value: $defaultValue"
+    Write-Log "Property '$propertyName' created with value: $defaultValue"
 }
 
 # Create the main form
@@ -493,7 +634,7 @@ if (-not (Test-Path $regPath)) {
             $textTenantId.Text = $tenantIdFromRegistry
         }
     } catch {
-        Write-Host "Failed to retrieve Tenant ID from registry: $_"
+        Write-Log "Failed to retrieve Tenant ID from registry: $_" 1
     }
 }
 
@@ -517,13 +658,13 @@ $chkSetRandomPin.Width = 300  # Set the width to 200 pixels
 $chkSetRandomPin.Location = New-Object System.Drawing.Point(20, 100)
 $form.Controls.Add($chkSetRandomPin)
 
-# Add a checkbox for "Copy generated PIN to clipboard"
-$checkBoxCopyToClipboard = New-Object System.Windows.Forms.CheckBox
-$checkBoxCopyToClipboard.Text = "Copy generated PIN to clipboard"
-$checkBoxCopyToClipboard.AutoSize = $true
-$checkBoxCopyToClipboard.Location = New-Object System.Drawing.Point(20, 140) # Adjust as needed
+# Add a checkbox for "Quick Mode"
+#$checkBoxQuickMode = New-Object System.Windows.Forms.CheckBox
+#$checkBoxQuickMode.Text = "Quick Mode (fewer individual confirmations)"
+#$checkBoxQuickMode.AutoSize = $true
+#$checkBoxQuickMode.Location = New-Object System.Drawing.Point(20, 140) # Adjust as needed
 
-$form.Controls.Add($checkBoxCopyToClipboard)
+#$form.Controls.Add($checkBoxQuickMode)
 
 
 # Create a checkbox for forcing PIN change
@@ -592,7 +733,7 @@ $form.Controls.Add($btnProceed)
 
  
  $btnProceed.Add_Click({
-    Write-Host "Checking entered data"
+    Write-Log "Checking entered data"
 	    $form.Visible = $false
 
     try {
@@ -612,38 +753,100 @@ $form.Controls.Add($btnProceed)
         }
 
         Set-ItemProperty -Path $regPath -Name "TenantId" -Value $tenantId -Force
-		Write-Host "Connecting to MSGraph"
-        Connect-MgGraph -Scopes 'UserAuthenticationMethod.ReadWrite.All' -TenantId $tenantId -NoWelcome
+		Write-Log "Connecting to MSGraph"
+		try {
+        Connect-MgGraph -Scopes 'UserAuthenticationMethod.ReadWrite.All,UserAuthMethod-Passkey.ReadWrite.All' -TenantId $tenantId -NoWelcome -ea Stop
+		}
+		catch{}
 
         $upns = Import-Csv $filePath | Select-Object -ExpandProperty UPN
 		$totalUsers = $upns.Count
 		$currentIndex = 0
-        foreach ($upn in $upns) {
+        :users foreach ($upn in $upns) {
+			Write-Log "Starting for $upn"
             if (-not $upn) { continue }
 			    $currentIndex++
-
             # Fetch the serial number using read_serial_t2.ps1
             try {
-                $serialOutput = (& ".\read_serial_t2.ps1").Trim()
-                if ([string]::IsNullOrWhiteSpace($serialOutput) -or $serialOutput -eq "None") {
-                    [System.Windows.Forms.MessageBox]::Show("No valid serial number detected.`nSkipping.`nPlease prepare next user's key.", "Error")
-                    Write-Host "No valid serial number for $upn. Skipping"
-                    continue
-                }
+				:getfidodevice while ($true) {
+					
+					$device = Get-FidoDevice
+					
+					if([string]::IsNullOrWhiteSpace($device)) {
+						$errorres=[System.Windows.Forms.MessageBox]::Show("No FIDO-Device found.
+Please ensure a FIDO2-enabled device is plugged into USB or connected to an NFC or chip reader.", "Error",2)
+						if($errorres -eq [System.Windows.Forms.DialogResult]::Abort) {
+							#$form.Close()
+							break users
+						}
+						elseif($errorres -eq [System.Windows.Forms.DialogResult]::Retry) {
+							continue
+						}
+						elseif($errorres -eq [System.Windows.Forms.DialogResult]::Ignore) {
+							continue users
+						}
+						Return
+					}
+					
+					Write-Log "Using device $device `n" 1
+					
+					$deviceinfo = & "$PSScriptRoot\libfido2-ui.exe" -I $device
+					
+					$nopin = Select-String -InputObject $deviceinfo -Pattern "noclientPin" -CaseSensitive
+					
+					if([string]::IsNullOrWhiteSpace($nopin)) {
+						$errorres=[System.Windows.Forms.MessageBox]::Show("FIDO2-Device has PIN set or does not use PIN:
+1) Please make sure the device is reset
+2) Please only use FIDO2-Devices that support clientPin
+Ignore: try next User, Retry: Retry same User, Abort: Stop everything", "Error",2)
+						if($errorres -eq [System.Windows.Forms.DialogResult]::Abort) {
+							#$form.Close()
+							break users
+						}
+						elseif($errorres -eq [System.Windows.Forms.DialogResult]::Retry) {
+							continue
+						}
+						elseif($errorres -eq [System.Windows.Forms.DialogResult]::Ignore) {
+							continue users
+						}
+						Return
+					}
+					
+					$serialOutput = (& "$PSScriptRoot\read_serial_t2.ps1")
+					#$serialOutput = "12345" ### Debug or for use with non-Token2 Devices
+					#$serialOutput = "" ### Debug or for use with non-Token2 Devices
+					
+					if ([string]::IsNullOrWhiteSpace($serialOutput) -or $serialOutput -eq "None") {
+						$errorres=[System.Windows.Forms.MessageBox]::Show("No Serial Number found:
+1) This script only works with TOKEN2 PIN+ Release 3 and newer
+2) The CCID application (PGP/PIV) needs to be active
+3) for older TOKEN2 PIN+ Models, change the script to use read_serial_t2.exe instead
+4) for non-TOKEN2-Devices, remove or change the Serial number detection logic
+Ignore: try next User, Retry: Retry same User, Abort: Stop everything", "Error",2)
+						if($errorres -eq [System.Windows.Forms.DialogResult]::Abort) {
+							#$form.Close()
+							break users
+						}
+						elseif($errorres -eq [System.Windows.Forms.DialogResult]::Retry) {
+							continue
+						}
+						elseif($errorres -eq [System.Windows.Forms.DialogResult]::Ignore) {
+							continue users
+						}
+					}
+					$serialOutput=$serialOutput.Trim()
+					break
+				}  ### :getfidodevice
             } catch {
-                [System.Windows.Forms.MessageBox]::Show("Error reading serial number.`nSkipping.`nPlease prepare next user's key.", "Error")
-                Write-Host "Error reading serial number for $upn"
+                [System.Windows.Forms.MessageBox]::Show("General error in Device or Serial Number detection.`nPlease open an issue, this should not occur.`nSkipping.`nPlease prepare next user's key.", "Error")
+                Write-Log^ "General Exception reading serial number or Device state for $upn"
                 continue
             }
 
             $randomPin = $null
             if ($chkSetRandomPin.Checked) {
                 $randomPin = Generate-RandomPin
-				# Copy generated PIN to clipboard if the checkbox is checked
-				if ($checkBoxCopyToClipboard.Checked) {
-					Write-Host "Set PIN to ClipBoard $randomPin"
-					Set-Clipboard -Value $randomPin
-				}
+				Write-Log "Using random PIN $randomPin"
             }
 			else {
 				$randomPin = $samplepin
@@ -681,65 +884,128 @@ $form.Controls.Add($btnProceed)
             $serialPopup.Controls.Add($btnAddKey)
 
             $btnAddKey.Add_Click({
-                Write-Host "Processing $upn with Serial: $serialOutput"
+                Write-Log "Processing $upn with Serial: $serialOutput"
 
                 try {
-                    if ($randomPin) {
-                        Write-Host "Setting PIN using fido2-manage.exe..."
-                        & ".\fido2-manage.exe" -setPIN -pin $randomPin -device 1
-                    }
+					:regisration while($true) { #loop to allow retry
+						if ($randomPin) {
+							Write-Log "Setting PIN using fido2-token..."
+							#& "$PSScriptRoot\fido2-manage.exe" -setPIN -pin $randomPin -device 1
+							& "$PSScriptRoot\libfido2-ui.exe" -S -P $randomPin $device
+						}
 
-###NOTE   ------------------------------         Passkey registration
+	###NOTE   ------------------------------         Passkey registration
 
-                    Write-Host "Registering passkey for $upn..."
-					<#
-					#I dont think we need this anymore due to Windows Hello being bypassed
-					# Set the initial size of the form
-					$serialPopup.Size = New-Object System.Drawing.Size(900, 100)
+						Write-Log "Registering Credential for $upn..."
+						<#
+						#I dont think we need this anymore due to Windows Hello being bypassed
+						# Set the initial size of the form
+						$serialPopup.Size = New-Object System.Drawing.Size(900, 100)
 
-					# Get the current position of the form
-					$currentLocation = $serialPopup.Location
+						# Get the current position of the form
+						$currentLocation = $serialPopup.Location
 
-					# Move the form 300 pixels to the left
-					$serialPopup.Location = New-Object System.Drawing.Point(($currentLocation.X - 300), $currentLocation.Y)
-#>
-					
-					
-                    #Graph-Register-Custom-Passkey -UserId $upn -DisplayName $serialOutput
-					# apparently calling Graph register makes it not yet be aware of some types, dont ask me why, PLEASE!
-					Get-PasskeyRegistrationOptions -UserId $upn | CTAP-Create-Custom-Passkey -DisplayName $serialOutput -pin $randomPin | Graph-Register-Custom-Passkey -UserId $upn
-					
-					$serialPopup.Size = New-Object System.Drawing.Size(400, 200)
-					 
-                    Write-Host "Passkey registered successfully for $upn."
-					  
+						# Move the form 300 pixels to the left
+						$serialPopup.Location = New-Object System.Drawing.Point(($currentLocation.X - 300), $currentLocation.Y)
+	#>
+						
+						
+						#Graph-Register-Custom-Passkey -UserId $upn -DisplayName $serialOutput
+						# apparently calling Graph register makes it not yet be aware of some types, dont ask me why, PLEASE!
+						Write-Log "Pulling Registration Request for $upn" 1
+						try {
+							$regreq = Invoke-MgCreationUserAuthenticationFido2MethodOption -UserId $upn -ea Stop
+						}
+						catch {
+							Write-Log "Exception while getting request. (See Error MsgBox)" #User-side Handling below
+						}
+						if($regreq) {
+							$regres = CTAP-Create-Custom-Passkey -DisplayName $serialOutput -pin $randomPin -GraphOptions $regreq -devicepath $device
+						}
+						else {
+							$errorres=[System.Windows.Forms.MessageBox]::Show("Cannot obtain Request from Entra, please verify that:
+1) you are logged in to the correct tenant with the correct permissions
+2) the tenant ID (domain) is set correctly
+3) The UPN is correct
+4) You are elevating using your own account
+Ignore: try next User, Retry: Retry same User, Abort: Stop everything", "Error",2)
+							if($errorres -eq [System.Windows.Forms.DialogResult]::Abort) {
+								#$form.Close()
+								$serialPopup.DialogResult = [System.Windows.Forms.DialogResult]::Abort
+								$serialPopup.Close()
+							}
+							elseif($errorres -eq [System.Windows.Forms.DialogResult]::Retry) {
+								$serialPopup.Close()
+								continue;
+							}
+							elseif($errorres -eq [System.Windows.Forms.DialogResult]::Ignore) {
+								$serialPopup.Close()
+								break;
+							}
+							Return
+						}
+						if($regres) {
+							$uploadres=Graph-Register-Custom-Passkey -UserId $upn -Passkey $regres
+						}
+						else {
+							$errorres=[System.Windows.Forms.MessageBox]::Show("Creating Credential failed, please check console Output for common errors: 
+FIDO_ERR_RX: Commonication Error, e.g. Device removed.
+FIDO_ERR_USER_ACTION_TIMEOUT: User Presence was not given (on USB, please touch or press the button when blinking)
+FIDO_ERR_PIN_INVALID: Wrong PIN (Please reset the device, this application assumes `"fresh`" devices)
+Ignore: try next User, Retry: Retry same User, Abort: Stop everything", "Error",2)
+							if($errorres -eq [System.Windows.Forms.DialogResult]::Abort) {
+								#$form.Close()
+								$serialPopup.DialogResult = [System.Windows.Forms.DialogResult]::Abort
+								$serialPopup.Close()
+							}
+							elseif($errorres -eq [System.Windows.Forms.DialogResult]::Retry) {
+								$serialPopup.Close()
+								continue;
+							}
+							elseif($errorres -eq [System.Windows.Forms.DialogResult]::Ignore) {
+								$serialPopup.Close()
+								break;
+							}
+							Return
+						}
+						if($uploadres) {
+							Write-Log "Upload Result: $uploadres" 1
+						}
+						
+						$serialPopup.Size = New-Object System.Drawing.Size(400, 200)
+						 
+						Write-Log "Passkey registered successfully for $upn."
+						  
 
-                    $forcedPin = $false
-                    if ($chkForcePinChange.Checked -and $randomPin) {
-                        Write-Host "Forcing PIN change using fido2-manage.exe..."
-                        & ".\fido2-manage.exe" -forcePINchange -pin $randomPin -device 1
-                        $forcedPin = $true
-                    }
+						$forcedPin = $false
+						if ($chkForcePinChange.Checked -and $randomPin) {
+							Write-Log "Forcing PIN change using fido2-token..."
+							& "$PSScriptRoot\libfido2-ui.exe" -w $randomPin -S -f $device
+							$forcedPin = $true
+						}
 
-                    # Log the results
-                    $logEntry = "$upn,$serialOutput,$randomPin,$forcedPin"
-                    if (-not (Test-Path $logFilePath)) {
-                        "UPN,Serial Number,PIN,ForcePINChange" | Out-File -FilePath $logFilePath -Encoding UTF8
-                    }
-                    $logEntry | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-                    Write-Host "Logged results for $upn."
-					  # Show MessageBox only if there's a next user
-                    if ($currentIndex -lt $totalUsers) {
-                        [System.Windows.Forms.MessageBox]::Show("Prepare the next key and click OK to continue.", 
-                            "Next Key Prompt", 
-                            [System.Windows.Forms.MessageBoxButtons]::OK, 
-                            [System.Windows.Forms.MessageBoxIcon]::Information)
-                    } else {
-                        Write-Host "All users processed. No further prompts."
-                    }
-	
+						# Log the results
+						$logEntry = "$upn,$serialOutput,$randomPin,$forcedPin"
+						if (-not (Test-Path $logFilePath)) {
+							"UPN,Serial Number,PIN,ForcePINChange" | Out-File -FilePath $logFilePath -Encoding UTF8
+						}
+						$logEntry | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+						Write-Log "Logged results for $upn."
+						  # Show MessageBox only if there's a next user
+						if ($currentIndex -lt $totalUsers) {
+							[System.Windows.Forms.MessageBox]::Show("Prepare the next key and click OK to continue.", 
+								"Next Key Prompt", 
+								[System.Windows.Forms.MessageBoxButtons]::OK, 
+								[System.Windows.Forms.MessageBoxIcon]::Information)
+						} else {
+							Write-Log "All users processed. No further prompts."
+						}
+						break #break out of while($true)-loop
+					}
                 } catch {
-                    Write-Host "Error during provisioning "
+					# I hope we no longer enter here
+					Write-Log "An error occurred (registration): $($_)"
+                    Write-Log "Error during provisioning"
                     [System.Windows.Forms.MessageBox]::Show("An error occurred during provisioning ", "Error")
 					throw
                 } finally {
@@ -748,13 +1014,20 @@ $form.Controls.Add($btnProceed)
                 }
             })
 
-            $serialPopup.ShowDialog()
+			# Catch Error State
+            $windowres=$serialPopup.ShowDialog()
+			if ($windowres -eq [System.Windows.Forms.DialogResult]::Abort) {
+				# break out if likely global error
+				$notcomplete=$true
+				break
+			}
         }
-
-        [System.Windows.Forms.MessageBox]::Show("Provisioning complete.", "Success")
+		if($notcomplete -ne $true) {
+			[System.Windows.Forms.MessageBox]::Show("Provisioning complete.", "Success")
+		}
 		 $form.Visible = $true
     } catch {
-        Write-Host "An error occurred: $($_)"
+        Write-Log "An error occurred (user cycle): $($_)"
         [System.Windows.Forms.MessageBox]::Show("An error occurred: $($_)", "Error")
     }
 })
